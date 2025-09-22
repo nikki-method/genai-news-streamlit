@@ -32,7 +32,6 @@ SOURCE_DOMAINS = {
     "Financial Times": "ft.com",
     "Business Insider": "businessinsider.com",
     "VentureBeat": "venturebeat.com",
-    "ZDNet": "zdnet.com",
     "CNBC": "cnbc.com",
     "Reuters": "reuters.com",
     "BBC News": "bbc.com",
@@ -306,10 +305,13 @@ def fetch_news(tag: str, page_size: int = 10, lookback_days: int = 21, domains: 
     r.raise_for_status()
     data = r.json()
     articles = [_normalize_article(a, tag) for a in data.get("articles", []) if a.get("url")]
+    # only keep articles where title includes "AI"
+    articles = [a for a in articles if "ai" in (a.get("title") or "").lower()]
     articles = _dedupe(articles)
     articles = diversify_articles(articles, max_per_source=2, limit=None)
+    return articles
 
-    return _dedupe(articles)[:3]
+    # return _dedupe(articles)[:3]
 
 
 def filter_already_seen(articles, seen_urls: set):
@@ -389,27 +391,35 @@ def summarize_article_openai(article: dict) -> dict:
         }
 
 def format_newsletter(articles):
-    """
-    Build a simple HTML email. Uses 'summary' if available else 'description'.
-    """
     email_body = "<h1>📰 Your AI News Digest</h1>"
     for a in articles:
         img   = a.get("image_url")
         title = a.get("title", "Untitled")
-        desc = a.get("summary") or a.get("description") or ""
-        tag = a.get("tag", "")
-        url = a.get("url", "#")
-        why = a.get("why_it_matters")
+        desc  = a.get("summary") or a.get("description") or ""
+        why   = a.get("why_it_matters")
+        url   = a.get("url", "#")
+
         email_body += f"""
-        <h2>{title}</h2>
-        {'<p><img src="' + img + '" alt="article image" style="max-width:100%;height:auto;"></p>' if img else ''}
-        <p><strong>Summary:</strong> {desc}</p>
-        {"<p><strong>Why it matters:</strong> " + why + "</p>" if why else ""}
-        <p><strong>Tag:</strong> {tag}</p>
-        <p><a href="{url}">Read more</a></p>
-        <hr>
+        <table style="width:100%; margin-bottom:20px; border-spacing:10px;">
+          <tr>
+            <!-- Left column: Image -->
+            <td style="width:200px; vertical-align:top;">
+              {'<img src="' + img + '" alt="article image" style="width:200px;height:300px;object-fit:cover;border-radius:6px;" />' if img else ''}
+            </td>
+
+            <!-- Right column: Content -->
+            <td style="vertical-align:top; font-family:Arial, sans-serif; color:#333;">
+              <h2 style="margin:0 0 10px 0;">{title}</h2>
+              <p style="margin:0 0 8px 0;"><strong>Summary:</strong> {desc}</p>
+              {f'<p style="margin:0 0 8px 0;"><strong>Why it matters:</strong> {why}</p>' if why else ''}
+              <p style="margin:0;"><a href="{url}" style="color:#1a73e8; text-decoration:none;">Read more</a></p>
+            </td>
+          </tr>
+        </table>
+        <hr style="border:none;border-top:1px solid #ddd;margin:20px 0;">
         """
     return email_body
+
 
 def send_email(recipients, articles):
     """
@@ -592,39 +602,43 @@ if selected_tags:
             st.error(f"Unexpected error: {e}")
 
 
-# Show selected articles & allow summarization
+# # Show selected articles & allow summarization
+# if st.session_state.selected_articles:
+#     st.subheader("Selected Articles for Newsletter")
+#     for a in st.session_state.selected_articles:
+#         st.write(f"**{a['title']}**")
+#         st.write(a.get("description") or a.get("summary") or "")
+#         st.write(a['url'])
+#         st.write(f"*Tag: {a['tag']}*")
+#         st.write("---")
+# Show how many articles were selected
 if st.session_state.selected_articles:
-    st.subheader("Selected Articles for Newsletter")
-    for a in st.session_state.selected_articles:
-        st.write(f"**{a['title']}**")
-        st.write(a.get("description") or a.get("summary") or "")
-        st.write(a['url'])
-        st.write(f"*Tag: {a['tag']}*")
-        st.write("---")
+    st.success(f"✅ You have selected {len(st.session_state.selected_articles)} articles.")
+
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🧠 Generate Summaries (OpenAI)"):
-            updated = []
-            for art in st.session_state.selected_articles:
-                s = summarize_article_openai(art)
-                updated.append({
-                    **art,
-                    "title": s.get("title", art["title"]),
-                    "summary": s.get("summary", art.get("description")),
-                    "why_it_matters": s.get("why_it_matters"),
-                })
-            st.session_state.selected_articles = updated
-            st.success("Summaries generated.")
-
-    with col2:
+        # if st.button("🧠 Generate Summaries (OpenAI)"):
+        #     updated = []
+        #     for art in st.session_state.selected_articles:
+        #         s = summarize_article_openai(art)
+        #         updated.append({
+        #             **art,
+        #             "title": s.get("title", art["title"]),
+        #             "summary": s.get("summary", art.get("description")),
+        #             "why_it_matters": s.get("why_it_matters"),
+        #         })
+        #     st.session_state.selected_articles = updated
+        #     st.success("Summaries generated.")
         if st.button("🗑️ Clear Selected"):
             st.session_state.selected_articles = []
             st.info("Selection cleared.")
 
+    with col2:
+
     # Email UI
-    st.subheader("Send Newsletter")
-    emails = st.text_input("Recipient emails (comma-separated)")
+        st.subheader("Send Newsletter")
+        emails = st.text_input("Recipient emails (comma-separated)")
 
     if st.button("📧 Send Newsletter"):
         if not emails.strip():
