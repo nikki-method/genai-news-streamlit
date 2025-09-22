@@ -9,6 +9,7 @@ import requests
 import streamlit as st
 from collections import defaultdict
 import random
+import re
 
 # --------- Config & Secrets ---------
 NEWS_API_KEY = st.secrets.get("NEWS_API_KEY", os.getenv("NEWS_API_KEY", ""))
@@ -306,7 +307,10 @@ def fetch_news(tag: str, page_size: int = 10, lookback_days: int = 21, domains: 
     data = r.json()
     articles = [_normalize_article(a, tag) for a in data.get("articles", []) if a.get("url")]
     # only keep articles where title includes "AI"
-    articles = [a for a in articles if "ai" in (a.get("title") or "").lower()]
+    # articles = [a for a in articles if "AI" in (a.get("title") or "").lower()]
+    articles = [
+    a for a in articles
+    if re.search(r"\bAI\b", (a.get("title") or ""), flags=re.IGNORECASE)]
     articles = _dedupe(articles)
     articles = diversify_articles(articles, max_per_source=2, limit=None)
     return articles
@@ -390,35 +394,75 @@ def summarize_article_openai(article: dict) -> dict:
             "tag": article["tag"],
         }
 
+def _pairs(seq, n=2):
+    """Yield items in chunks of n (for 2-column rows)."""
+    chunk = []
+    for x in seq:
+        chunk.append(x)
+        if len(chunk) == n:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
 def format_newsletter(articles):
-    email_body = "<h1>📰 Your AI News Digest</h1>"
-    for a in articles:
-        img   = a.get("image_url")
-        title = a.get("title", "Untitled")
-        desc  = a.get("summary") or a.get("description") or ""
-        why   = a.get("why_it_matters")
-        url   = a.get("url", "#")
+    # Image dimensions for email cards
+    IMAGE_W = 300
+    IMAGE_H = 200
 
-        email_body += f"""
-        <table style="width:100%; margin-bottom:20px; border-spacing:10px;">
-          <tr>
-            <!-- Left column: Image -->
-            <td style="width:200px; vertical-align:top;">
-              {'<img src="' + img + '" alt="article image" style="width:200px;height:300px;object-fit:cover;border-radius:6px;" />' if img else ''}
-            </td>
+    # Outer container table (email-safe)
+    html = [
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="border-collapse:collapse;font-family:Arial, Helvetica, sans-serif;color:#222;">',
+        '<tr><td style="padding:16px 0;"><h1 style="margin:0;font-size:22px;">📰 Your AI News Digest</h1></td></tr>'
+    ]
 
-            <!-- Right column: Content -->
-            <td style="vertical-align:top; font-family:Arial, sans-serif; color:#333;">
-              <h2 style="margin:0 0 10px 0;">{title}</h2>
-              <p style="margin:0 0 8px 0;"><strong>Summary:</strong> {desc}</p>
-              {f'<p style="margin:0 0 8px 0;"><strong>Why it matters:</strong> {why}</p>' if why else ''}
-              <p style="margin:0;"><a href="{url}" style="color:#1a73e8; text-decoration:none;">Read more</a></p>
-            </td>
-          </tr>
-        </table>
-        <hr style="border:none;border-top:1px solid #ddd;margin:20px 0;">
-        """
-    return email_body
+    # Render two cards per row
+    for row in _pairs(articles, 2):
+        html.append('<tr>')
+
+        for a in row:
+            img   = a.get("image_url")
+            tag   = a.get("tag") or ""
+            title = a.get("title") or "Untitled"
+            desc  = a.get("summary") or a.get("description") or ""
+            why   = a.get("why_it_matters")
+            url   = a.get("url") or "#"
+
+            html.append(
+                f'''<td width="50%" valign="top" style="padding:12px;">
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" 
+                             style="border-collapse:collapse;border:1px solid #eee;border-radius:8px;overflow:hidden;">
+                        <tr>
+                          <td style="padding:0;">
+                            {f'<img src="{img}" alt="" style="display:block;width:{IMAGE_W}px;height:{IMAGE_H}px;object-fit:cover;border-bottom:1px solid #eee;" />' if img else ''}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style="padding:12px 14px;">
+                            {f'<div style="font-size:12px;color:#3b5bfd;margin:0 0 6px 0;">{tag}</div>' if tag else ''}
+                            <h3 style="margin:0 0 10px 0;font-size:18px;line-height:1.3;">{title}</h3>
+                            <p style="margin:0 0 10px 0;font-size:14px;line-height:1.5;">
+                              <strong>Summary:</strong> {desc}
+                            </p>
+                            {f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.5;"><strong>Why it matters:</strong> {why}</p>' if why else ''}
+                            <p style="margin:0;font-size:14px;">
+                              <a href="{url}" style="color:#1a73e8;text-decoration:none;">Read More</a>
+                            </p>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>'''
+            )
+
+        # If odd number of articles, add an empty cell to keep layout clean
+        if len(row) == 1:
+            html.append('<td width="50%" style="padding:12px;"></td>')
+
+        html.append('</tr>')
+
+    html.append('</table>')
+    return ''.join(html)
 
 
 def send_email(recipients, articles):
@@ -457,13 +501,13 @@ st.markdown(
 
 st.title("📰 GenAI News Summarizer")
 
-# Secrets status UI (small helper)
-with st.expander("⚙️ Configuration status"):
-    st.write(f"NEWS_API_KEY set: {'✅' if NEWS_API_KEY else '❌'}")
-    st.write(f"OPENAI_API_KEY set (optional): {'✅' if OPENAI_API_KEY else '❌'}")
-    st.write(f"EMAIL_SENDER set: {'✅' if EMAIL_SENDER else '❌'}")
-    st.write(f"EMAIL_APP_PASSWORD set: {'✅' if EMAIL_APP_PASSWORD else '❌'}")
-    st.caption("Tip: put these in .streamlit/secrets.toml")
+# # Secrets status UI (small helper)
+# with st.expander("⚙️ Configuration status"):
+#     st.write(f"NEWS_API_KEY set: {'✅' if NEWS_API_KEY else '❌'}")
+#     st.write(f"OPENAI_API_KEY set (optional): {'✅' if OPENAI_API_KEY else '❌'}")
+#     st.write(f"EMAIL_SENDER set: {'✅' if EMAIL_SENDER else '❌'}")
+#     st.write(f"EMAIL_APP_PASSWORD set: {'✅' if EMAIL_APP_PASSWORD else '❌'}")
+#     st.caption("Tip: put these in .streamlit/secrets.toml")
 
 tags = [
     "AI & Infrastructure",
